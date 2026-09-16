@@ -1,0 +1,43 @@
+[package]
+name = "arti-c"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Minimal stable C ABI wrapper around Arti (arti-client) with a built-in SOCKS5 proxy"
+license = "MIT OR Apache-2.0"
+repository = "https://gitlab.torproject.org/tpo/core/arti"
+keywords = ["tor", "arti", "ffi", "c-api", "socks"]
+categories = ["network-programming", "api-bindings"]
+
+# This crate is deliberately standalone: it is NOT a member of the upstream
+# Arti workspace, and it does not modify any upstream source.
+[workspace]
+
+[lib]
+name = "arti_ffi"
+# Build as a static library (libarti_ffi.a / arti_ffi.lib) that CMake links
+# into the final shared library (libarti.so / libarti.dylib / arti.dll).
+crate-type = ["staticlib"]
+
+[dependencies]
+# Library-only Arti client. No upstream source is modified; this depends on
+# the published crates that make up Arti 2.6.x.
+arti-client = { version = "0.46", default-features = true }
+tor-rtcompat = "0.46"
+tor-socksproto = "0.46"
+# Build SQLite from vendored sources so arti-c has no system dependencies;
+# the resulting static archive is linked by CMake (see CMakeLists.txt).
+rusqlite = { version = "0.39", features = ["bundled"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "macros",
+    "sync",
+    "time",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true

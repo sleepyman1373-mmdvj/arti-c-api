@@ -1,0 +1,12 @@
+; Export list for arti.dll. All public symbols come from the Rust static
+; library (libarti_ffi / arti_ffi); this file instructs the linker to export
+; them from the shared library. Only for Windows-style linkers (MSVC/MinGW);
+; on Unix the symbols are exported automatically.
+LIBRARY arti
+EXPORTS
+    arti_start
+    arti_is_ready
+    arti_socks_port
+    arti_last_error
+    arti_stop
+    arti_version

@@ -5,6 +5,7 @@
 //! local SOCKS5 proxy is served on 127.0.0.1:<port> (see the `socks` module).
 
 mod socks;
+mod tcp_mark;
 
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::{TorClient, TorClientConfig};
@@ -14,6 +15,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use tokio::sync::watch;
+use tor_rtcompat::{PreferredRuntime, RuntimeSubstExt as _};
 
 /// Opaque handle returned by `arti_start` and consumed by every other
 /// entry point. Never dereferenced on the C side.
@@ -90,6 +92,27 @@ pub extern "C" fn arti_version() -> *const c_char {
 /// eventually be released with exactly one call to `arti_stop()`.
 #[no_mangle]
 pub extern "C" fn arti_start(data_dir: *const c_char, socks_port: u16) -> *mut Arti {
+    arti_start_with_mark(data_dir, socks_port, 0)
+}
+
+/// Start the Arti client exactly as [`arti_start`] does, but stamp
+/// `outbound_mark` on every socket Arti opens with `SO_MARK`.
+///
+/// Hosts that embed arti-c behind a transparent VPN need this: their firewall
+/// diverts all outbound traffic into a local proxy, and Arti's own connections
+/// to the Tor network have to be exempt or they are diverted back into the
+/// tunnel they are carrying (see the `tcp_mark` module).
+///
+/// A mark of 0 disables marking and is equivalent to calling `arti_start`. On
+/// platforms without `SO_MARK` -- anything other than Linux -- a non-zero mark
+/// makes the start succeed but every connection attempt fail, so callers
+/// should request a mark only where they can also set one themselves.
+#[no_mangle]
+pub extern "C" fn arti_start_with_mark(
+    data_dir: *const c_char,
+    socks_port: u16,
+    outbound_mark: u32,
+) -> *mut Arti {
     *STARTUP_ERROR.lock().expect("startup error slot poisoned") = None;
 
     let dir = if data_dir.is_null() {
@@ -127,7 +150,14 @@ pub extern "C" fn arti_start(data_dir: *const c_char, socks_port: u16) -> *mut A
         .name("arti-c".to_string())
         .spawn(move || {
             run_thread(
-                dir, socks_port, ready, failed, last_error, shutdown_rx, init_tx,
+                dir,
+                socks_port,
+                outbound_mark,
+                ready,
+                failed,
+                last_error,
+                shutdown_rx,
+                init_tx,
             );
         });
 
@@ -256,6 +286,7 @@ pub extern "C" fn arti_stop(a: *mut Arti) {
 fn run_thread(
     dir: Option<PathBuf>,
     socks_port: u16,
+    outbound_mark: u32,
     ready: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     last_error: Arc<Mutex<Option<CString>>>,
@@ -286,6 +317,7 @@ fn run_thread(
     let result = rt.block_on(async_main(
         dir,
         socks_port,
+        outbound_mark,
         Arc::clone(&ready),
         Arc::clone(&failed),
         Arc::clone(&last_error),
@@ -320,6 +352,7 @@ fn run_thread(
 async fn async_main(
     dir: Option<PathBuf>,
     socks_port: u16,
+    outbound_mark: u32,
     ready: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     last_error: Arc<Mutex<Option<CString>>>,
@@ -328,7 +361,18 @@ async fn async_main(
 ) -> Result<u16, String> {
     let config = build_config(dir.as_ref())?;
 
-    let client = TorClient::builder()
+    // Substitute a TCP provider that marks its sockets, so that a host which
+    // diverts all outbound traffic into a transparent proxy can exempt Arti's
+    // own connections to the Tor network. A mark of 0 leaves the sockets
+    // unmarked, which is what an unmodified runtime would do.
+    let stock = PreferredRuntime::current()
+        .map_err(|e| format!("failed to get the current Tokio runtime: {e}"))?;
+    let runtime = stock.with_tcp_provider(tcp_mark::MarkedTcpProvider::new(
+        stock.clone(),
+        outbound_mark,
+    ));
+
+    let client = TorClient::with_runtime(runtime)
         .config(config)
         .create_unbootstrapped_async()
         .await

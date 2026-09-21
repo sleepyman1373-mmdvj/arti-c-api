@@ -57,6 +57,7 @@ set(RUST_SOURCES
     ${RUST_MANIFEST_DIR}/Cargo.lock
     ${RUST_MANIFEST_DIR}/src/lib.rs
     ${RUST_MANIFEST_DIR}/src/socks.rs
+    ${RUST_MANIFEST_DIR}/src/tcp_mark.rs
 )
 
 set(RUST_BUILD_ARGS

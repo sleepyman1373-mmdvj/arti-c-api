@@ -137,9 +137,28 @@ add_dependencies(arti arti_ffi)
 # cmake/arti.def lists the exports explicitly). Force whole-archive
 # extraction on every linker family we support instead.
 if(MSVC)
-    # MSVC takes a per-input-library flag rather than a pair of markers.
+    # MSVC is the exception: do NOT use /WHOLEARCHIVE here, even though it is
+    # the direct analogue of the flags below.
+    #
+    # rustc's staticlib output on the MSVC target bundles the import libraries
+    # shipped by the `windows-*-msvc` crates as *archive members*, one member
+    # per DLL (`kernel32.dll`, `ntoskrnl.exe`, `api-ms-win-core-*.dll`, ...).
+    # A real arti_ffi.lib carries thousands of them, with the common ones
+    # repeated many times over -- e.g. `kernel32.dll` appears well over a
+    # thousand times, because each windows-*-msvc version depends on its own
+    # copy. Every one of those members defines the same import-descriptor
+    # symbols (`__IMPORT_DESCRIPTOR_kernel32`, `__NULL_IMPORT_DESCRIPTOR_*`,
+    # `*_NULL_THUNK_DATA`). Ordinarily that is harmless, since the linker
+    # extracts at most one member per undefined symbol and ignores the rest;
+    # /WHOLEARCHIVE would force *every* copy in, producing thousands of
+    # LNK2005 "already defined" errors and a fatal LNK1169.
+    #
+    # Windows does not need whole-archive anyway: cmake/arti.def lists all six
+    # arti_* exports, and an export list creates exactly the undefined-symbol
+    # references that pull the matching archive members in. link.exe then
+    # resolves the remaining Windows API imports the usual way, extracting
+    # whichever bundled import-library member it needs.
     target_link_libraries(arti PRIVATE arti_ffi)
-    target_link_options(arti PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:arti_ffi>")
 elseif(APPLE)
     target_link_libraries(arti PRIVATE
         -Wl,-force_load,$<TARGET_FILE:arti_ffi>

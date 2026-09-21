@@ -55,9 +55,10 @@ uint16_t arti_socks_port(arti *a);
  * string, or NULL if there is none.  With a NULL handle, return the error
  * from the most recent failed arti_start() call.
  *
- * The returned pointer remains valid only until the next call to any
- * arti_* function on the same handle (or, with NULL, the next
- * arti_start()).  It must not be freed.
+ * The returned pointer is owned by, and lives in storage private to, the
+ * calling thread (like strerror() on most platforms). It remains valid
+ * until that same thread calls arti_last_error() again (on any handle), and
+ * must not be used from a different thread or freed.
  */
 const char *arti_last_error(const arti *a);
 

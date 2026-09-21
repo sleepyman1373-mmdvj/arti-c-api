@@ -12,11 +12,18 @@ cmake_minimum_required(VERSION 3.19)
 project(arti-c
     VERSION 0.1.0
     DESCRIPTION "Minimal stable C ABI wrapper around Arti with a built-in SOCKS5 proxy"
-    LANGUAGES C
+    LANGUAGES C CXX
 )
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# Only needed by the C++ front-end (examples/arti-proxy.cpp); the shared
+# library itself is C. Declared here rather than relying on CMake inferring the
+# language from the target's sources, so a missing C++ compiler fails early and
+# clearly.
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ---------------------------------------------------------------------------
 # Options
@@ -56,11 +63,37 @@ set(RUST_BUILD_ARGS
     build
     --manifest-path ${RUST_MANIFEST_DIR}/Cargo.toml
     --profile ${ARTI_PROFILE}
+    --locked
 )
 if(ARTI_CARGO_TARGET)
     list(APPEND RUST_BUILD_ARGS --target ${ARTI_CARGO_TARGET})
-else()
-    list(APPEND RUST_BUILD_ARGS --locked)
+endif()
+
+# We need to know, at *configure* time, the on-disk paths of the native
+# static libraries that Rust "sys" crates (sqlite3, etc.) produce as part of
+# `cargo build` -- CMake bakes `target_link_libraries()` into the generated
+# build files at configure time, so a `file(GLOB ...)` here only ever sees
+# what already exists on disk *right now*. On a clean checkout nothing has
+# been built yet, so that glob would silently return an empty list forever
+# (until someone manually re-runs `cmake` a second time after a build).
+#
+# To avoid that trap, run the real `cargo build` once, synchronously, during
+# configure. This is the same technique used by cargo/CMake integration
+# tools such as Corrosion. It makes the very first `cmake -S/-B` invocation
+# slower (and is why this project needs cargo/rustc `REQUIRED` above), but
+# guarantees the native-library glob below reflects reality. The
+# add_custom_command()/add_custom_target() further down still re-invokes
+# cargo (which is a fast no-op when nothing changed) so incremental
+# `cmake --build` after editing Rust sources keeps working correctly.
+message(STATUS "Running initial 'cargo build' so build artifacts can be located (this may take a while)...")
+execute_process(
+    COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
+            ${CARGO_EXECUTABLE} ${RUST_BUILD_ARGS}
+    WORKING_DIRECTORY ${RUST_MANIFEST_DIR}
+    RESULT_VARIABLE RUST_INITIAL_BUILD_RESULT
+)
+if(NOT RUST_INITIAL_BUILD_RESULT EQUAL 0)
+    message(FATAL_ERROR "Initial 'cargo build' failed (exit code ${RUST_INITIAL_BUILD_RESULT}); see output above.")
 endif()
 
 add_custom_command(
@@ -93,7 +126,31 @@ if(WIN32)
     target_sources(arti PRIVATE cmake/arti.def)
 endif()
 add_dependencies(arti arti_ffi)
-target_link_libraries(arti PRIVATE arti_ffi)
+
+# Pull EVERY object from libarti_ffi.a into the shared library, not just the
+# ones already referenced by shim.c (shim.c is deliberately empty -- see its
+# comment). By default, linkers only extract archive members that resolve an
+# already-outstanding undefined symbol; since nothing in this C target calls
+# arti_start/arti_is_ready/etc., a plain `target_link_libraries(arti PRIVATE
+# arti_ffi)` would silently produce a libarti.so/.dylib with *zero* exported
+# arti_* symbols on ELF/Mach-O (MSVC/Windows was accidentally fine because
+# cmake/arti.def lists the exports explicitly). Force whole-archive
+# extraction on every linker family we support instead.
+if(MSVC)
+    # MSVC takes a per-input-library flag rather than a pair of markers.
+    target_link_libraries(arti PRIVATE arti_ffi)
+    target_link_options(arti PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:arti_ffi>")
+elseif(APPLE)
+    target_link_libraries(arti PRIVATE
+        -Wl,-force_load,$<TARGET_FILE:arti_ffi>
+    )
+else()
+    # GNU ld, gold, lld, mold (Linux and other ELF platforms), and MinGW.
+    target_link_libraries(arti PRIVATE
+        -Wl,--whole-archive $<TARGET_FILE:arti_ffi> -Wl,--no-whole-archive
+    )
+endif()
+
 target_include_directories(arti PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
@@ -137,8 +194,19 @@ elseif(APPLE)
         "-framework SystemConfiguration"
     )
 else()
-    # Linux and other Unix-likes
-    target_link_libraries(arti PRIVATE dl m)
+    # Linux and other Unix-likes.
+    #
+    # arti-client's default TLS backend is `native-tls`, which on Unix
+    # (unlike macOS/Windows, where it uses the platform's built-in TLS
+    # library and the frameworks/system libs linked above) binds to the
+    # system OpenSSL via `openssl-sys`. That crate links OpenSSL
+    # dynamically and does NOT vendor/build it, so libssl/libcrypto must be
+    # found here explicitly -- rustc has no way to propagate that
+    # requirement out of a `staticlib`. Without this, the final
+    # libarti.so links but fails to load (or fails to link, depending on
+    # the platform) with undefined SSL_*/EVP_* symbols.
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(arti PRIVATE OpenSSL::SSL OpenSSL::Crypto dl m)
 endif()
 
 # Native static archives produced by Rust "sys" crates (sqlite3, zstd, lzma,
@@ -173,9 +241,19 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
+# Command-line SOCKS5 proxy (C++ front-end, used to test the library)
+# ---------------------------------------------------------------------------
+add_executable(arti-proxy examples/arti-proxy.cpp)
+target_link_libraries(arti-proxy PRIVATE arti)
+if(MSVC)
+    set_target_properties(arti-proxy PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+endif()
+# No ws2_32 here: unlike `simple`, this program never touches sockets itself.
+
+# ---------------------------------------------------------------------------
 # Install / packaging
 # ---------------------------------------------------------------------------
-install(TARGETS arti simple
+install(TARGETS arti simple arti-proxy
     LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -184,7 +262,23 @@ install(TARGETS arti simple
 
 set(CPACK_PACKAGE_NAME "arti-c")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Minimal stable C ABI wrapper around Arti (Tor)")
 set(CPACK_PACKAGE_VENDOR "The Tor Project")
-set(CPACK_PACKAGE_LICENSE "MIT OR Apache-2.0")
+# NOTE: "CPACK_PACKAGE_LICENSE" is not a variable CPack reads; the correct
+# name is CPACK_RESOURCE_FILE_LICENSE, and it must point at an actual file
+# (CPack embeds/ships it, e.g. as the license page of a .msi or NSIS
+# installer, or LICENSE.txt in a .tar.gz/.zip). We have no bundled LICENSE
+# file in this tree, so rather than pointing at a path that doesn't exist
+# (which CPack would fail on for generators that require it, e.g. NSIS/WIX),
+# just record the SPDX expression in the summary/description instead.
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Minimal stable C ABI wrapper around Arti (Tor) -- license: MIT OR Apache-2.0")
+# CPack defaults CPACK_GENERATOR to a whole platform-dependent list
+# (including generators like NSIS/WIX/RPM/DEB that we haven't configured
+# the metadata for, and which would fail); pin it to a plain archive
+# generator that always works with what's set above.
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP")
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
 include(CPack)

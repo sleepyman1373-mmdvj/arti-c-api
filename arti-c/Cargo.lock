@@ -95,6 +95,7 @@ name = "arti-c"
 version = "0.1.0"
 dependencies = [
  "arti-client",
+ "liblzma-sys",
  "rusqlite",
  "tokio",
  "tor-rtcompat",

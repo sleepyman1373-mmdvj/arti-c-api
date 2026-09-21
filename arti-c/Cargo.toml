@@ -25,9 +25,24 @@ crate-type = ["staticlib"]
 arti-client = { version = "0.46", default-features = true }
 tor-rtcompat = "0.46"
 tor-socksproto = "0.46"
-# Build SQLite from vendored sources so arti-c has no system dependencies;
-# the resulting static archive is linked by CMake (see CMakeLists.txt).
+# Build SQLite from vendored sources (rather than linking the system
+# libsqlite3) so arti-c doesn't need it installed; the resulting static
+# archive is linked by CMake (see CMakeLists.txt). This does NOT cover TLS:
+# the default `native-tls` backend still binds to the system OpenSSL on
+# Linux/Unix (see the OpenSSL::SSL/OpenSSL::Crypto linking in
+# CMakeLists.txt and the Requirements section of README.md).
 rusqlite = { version = "0.39", features = ["bundled"] }
+# Force liblzma to be built from the vendored xz sources instead of probing
+# pkg-config for the system liblzma. `liblzma-sys` (pulled in indirectly via
+# arti-client -> compression-codecs -> liblzma) prefers a system liblzma
+# >= 5.8.0 when one is present, in which case its build script returns early
+# and emits a *dynamic* `cargo:rustc-link-lib=lzma` with no archive in
+# OUT_DIR. Cargo does not propagate that out of a `staticlib`, so the final
+# libarti.so ends up with unresolved lzma_* symbols. The `static` feature
+# makes the probe unconditional and guarantees a liblzma.a for CMake to link
+# (the same glob that picks up bundled sqlite3/zstd). Note this also makes
+# the build behave identically on distros whose liblzma is older than 5.8.0.
+liblzma-sys = { version = "0.4.9", features = ["static"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = [
     "rt-multi-thread",

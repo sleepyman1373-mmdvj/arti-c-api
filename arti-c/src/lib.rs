@@ -38,6 +38,32 @@ fn set_err(slot: &Mutex<Option<CString>>, msg: String) {
     *slot.lock().expect("error slot poisoned") = Some(cmsg);
 }
 
+// `arti_last_error` used to return a pointer straight out of a shared
+// `Mutex<Option<CString>>` after releasing the lock. That pointer aliased
+// memory another thread was free to overwrite (or drop, freeing it) via a
+// *later* call to `set_err` on the very same handle the instant the lock
+// was released -- a classic non-`strerror_r` style use-after-free, and it
+// contradicted the header's "thread-safe" claim.
+//
+// Fix: copy the message into a per-*calling*-thread buffer before handing
+// the pointer back. Only the calling thread can invalidate its own
+// thread-local, so the pointer is safe for as long as the header already
+// promises ("valid until the next call to arti_last_error on the same
+// thread"). This is the same pattern libc uses for `strerror`/`strerror_l`.
+thread_local! {
+    static LAST_ERROR_TLS: std::cell::RefCell<Option<CString>> = const { std::cell::RefCell::new(None) };
+}
+
+fn tls_copy_of(msg: CString) -> *const c_char {
+    LAST_ERROR_TLS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        *slot = Some(msg);
+        // Safe to return: the CString we just stored owns a stable heap
+        // allocation, and only this thread can replace/clear `slot`.
+        slot.as_ref().unwrap().as_ptr()
+    })
+}
+
 /// Return version information as a static, NUL-terminated string.
 /// The pointer is valid for the lifetime of the process; do not free it.
 #[no_mangle]
@@ -87,6 +113,16 @@ pub extern "C" fn arti_start(data_dir: *const c_char, socks_port: u16) -> *mut A
     let failed = Arc::new(AtomicBool::new(false));
     let last_error: Arc<Mutex<Option<CString>>> = Arc::new(Mutex::new(None));
 
+    // Keep our own clones of these three Arcs *before* moving the originals
+    // into the background thread, so the handle we return to C shares the
+    // exact same atomics/mutex that `run_thread`/`async_main` update. Giving
+    // the returned `Arti` brand-new, disconnected instances here would mean
+    // `arti_is_ready`/`arti_last_error` could never observe what the
+    // background thread does.
+    let ready_handle = Arc::clone(&ready);
+    let failed_handle = Arc::clone(&failed);
+    let last_error_handle = Arc::clone(&last_error);
+
     let join = std::thread::Builder::new()
         .name("arti-c".to_string())
         .spawn(move || {
@@ -105,12 +141,12 @@ pub extern "C" fn arti_start(data_dir: *const c_char, socks_port: u16) -> *mut A
 
     match init_rx.recv_timeout(std::time::Duration::from_secs(120)) {
         Ok(Ok(port)) => Box::into_raw(Box::new(Arti {
-            ready: Arc::new(AtomicBool::new(false)),
-            failed: Arc::new(AtomicBool::new(false)),
+            ready: ready_handle,
+            failed: failed_handle,
             socks_port: AtomicU16::new(port),
             shutdown_tx,
             join: Some(join),
-            last_error: Arc::new(Mutex::new(None)),
+            last_error: last_error_handle,
         })),
         Ok(Err(msg)) => {
             set_err(&STARTUP_ERROR, msg);
@@ -122,6 +158,23 @@ pub extern "C" fn arti_start(data_dir: *const c_char, socks_port: u16) -> *mut A
                 &STARTUP_ERROR,
                 "timed out waiting for Arti startup (config load or port bind)".to_string(),
             );
+            // We're about to return NULL, so the caller has no handle and
+            // therefore no way to ever call arti_stop() to bring this
+            // background thread down -- previously it (and the SOCKS port
+            // it might still go on to bind) would run for the rest of the
+            // process's life with nothing able to reach it.
+            //
+            // Signal shutdown now, on the best-effort chance the thread is
+            // simply slow rather than stuck: if it's blocked inside
+            // `create_unbootstrapped_async`/`TcpListener::bind` it won't see
+            // this yet, but as soon as it reaches `async_main`'s shutdown
+            // wait loop (including the case where it finishes normally a
+            // moment after we gave up), it will exit immediately instead of
+            // idling forever. We deliberately do NOT `join()` here: `join`
+            // could block indefinitely if the thread truly is stuck, and
+            // `arti_start` must return promptly once its own timeout has
+            // elapsed.
+            let _ = shutdown_tx.send(true);
             ptr::null_mut()
         }
     }
@@ -156,21 +209,26 @@ pub extern "C" fn arti_socks_port(a: *const Arti) -> u16 {
 /// NUL-terminated string, or NULL if there is none. With a NULL handle,
 /// return the error from the most recent failed `arti_start` call.
 ///
-/// The returned pointer remains valid until the next call to any `arti_*`
-/// function on the same handle (or with NULL, the next `arti_start`). It
-/// must not be freed.
+/// The returned pointer lives in storage private to the calling thread and
+/// remains valid until that same thread calls `arti_last_error` again (on
+/// any handle). It must not be used from another thread, and must not be
+/// freed.
 #[no_mangle]
 pub extern "C" fn arti_last_error(a: *const Arti) -> *const c_char {
-    if a.is_null() {
-        return match &*STARTUP_ERROR.lock().expect("startup error slot poisoned") {
-            Some(s) => s.as_ptr(),
-            None => ptr::null(),
-        };
-    }
-    let a = unsafe { &*a };
-    let slot = a.last_error.lock().expect("error slot poisoned");
-    match &*slot {
-        Some(s) => s.as_ptr(),
+    // Clone the message out while holding the lock, then release the lock
+    // *before* touching the calling thread's TLS buffer. The clone is the
+    // fix for the cross-thread use-after-free described above.
+    let msg: Option<CString> = if a.is_null() {
+        STARTUP_ERROR
+            .lock()
+            .expect("startup error slot poisoned")
+            .clone()
+    } else {
+        let a = unsafe { &*a };
+        a.last_error.lock().expect("error slot poisoned").clone()
+    };
+    match msg {
+        Some(s) => tls_copy_of(s),
         None => ptr::null(),
     }
 }
@@ -236,10 +294,22 @@ fn run_thread(
     ));
 
     if let Err(msg) = result {
-        // Startup failed after init_tx was already consumed; record it so
-        // `arti_is_ready`/`arti_last_error` can surface it.
-        set_err(&last_error, msg);
+        // Record the failure so a handle that *did* get created (bootstrap
+        // failing after the SOCKS listener was already up) can surface it via
+        // `arti_is_ready`/`arti_last_error`.
+        set_err(&last_error, msg.clone());
         failed.store(true, Ordering::SeqCst);
+
+        // If `async_main` failed *before* it could report a bound port (bad
+        // config, client-creation failure, or the SOCKS port already being in
+        // use), `init_tx` was never sent on. Previously that meant `init_tx`
+        // was simply dropped here, so `arti_start`'s `recv_timeout` only ever
+        // saw the channel disconnect and reported a generic "timed out"
+        // message -- discarding the real, specific reason computed above.
+        // Send it explicitly so `arti_start` returns it via
+        // `arti_last_error(NULL)`. This is a no-op if `init_tx` was already
+        // used to report success, since in that case `result` is always `Ok`.
+        let _ = init_tx.send(Err(msg));
     }
 
     // Dropping the runtime aborts the accept loop and drops the client,

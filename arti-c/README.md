@@ -43,9 +43,21 @@ const char *arti_version(void);
 
 * Rust (cargo + rustc), stable toolchain
 * CMake >= 3.19
-* A C compiler: GCC, Clang, or MSVC
+* C and C++ compilers: GCC, Clang, or MSVC (the C++ compiler is only needed
+  for the `arti-proxy` front-end; the library itself is C)
 * On Windows with MSVC: the Visual C++ redistributable / build tools
   (Rust's `x86_64-pc-windows-msvc` target)
+* **On Linux and other non-Apple Unix-likes only:** a system OpenSSL
+  development package (e.g. `libssl-dev` on Debian/Ubuntu, `openssl-devel`
+  on Fedora/RHEL). `arti-client`'s default TLS backend (`native-tls`) binds
+  to the system OpenSSL there; on macOS and Windows it uses the OS's own TLS
+  library instead (already linked via the frameworks / system libs in
+  `CMakeLists.txt`), so nothing extra is needed on those platforms.
+
+CMake configure runs an initial `cargo build` synchronously (needed so it
+can locate the native static libraries `cargo` produces, e.g. for bundled
+sqlite); expect the *first* `cmake -S ... -B ...` invocation to take as long
+as a full `cargo build` would.
 
 ## Building
 
@@ -58,6 +70,38 @@ Artifacts:
 
 * Shared library: `build/libarti.so` / `build/libarti.dylib` / `build/arti.dll`
 * Example binary: `build/simple`
+* Command-line SOCKS5 proxy: `build/arti-proxy`
+
+### Command-line proxy
+
+`arti-proxy` starts Arti in-process and serves its SOCKS5 proxy on
+`127.0.0.1:<port>` in the foreground:
+
+```sh
+./build/arti-proxy                       # 127.0.0.1:9150
+./build/arti-proxy --socks-port 9050     # a different port
+./build/arti-proxy --data-dir /tmp/arti  # persistent state and cache
+```
+
+Port `9150` is the default (the same port `arti proxy` uses); `--socks-port 0`
+selects `arti_start()`'s own default of `9050`. With no `--data-dir`, Arti's
+platform-default storage directories are used.
+
+The program prints its listening address immediately, but Arti still has to
+bootstrap onto the Tor network before it can relay anything, which can take a
+minute on a first run. Until then it accepts connections but cannot carry
+traffic; run with `RUST_LOG=info` (the default) to watch progress on stderr.
+
+It is a test harness rather than a service: it installs no signal handlers and
+does not shut Arti down cleanly, so `Ctrl+C` simply terminates the process. Use
+it to check that the proxy works end to end:
+
+```sh
+curl -sS --socks5-hostname 127.0.0.1:9150 https://example.com
+```
+
+Note that `--socks5-hostname` (rather than `--socks5`) lets the proxy resolve the
+name over Tor instead of resolving it locally.
 
 ### Windows notes
 
@@ -88,6 +132,7 @@ Installed files:
 * `<prefix>/include/arti.h`
 * `<prefix>/lib/libarti.so*` (or `dylib`, or `bin/arti.dll` + import lib)
 * `<prefix>/bin/simple`
+* `<prefix>/bin/arti-proxy`
 
 ## Using the library
 

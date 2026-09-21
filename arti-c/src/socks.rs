@@ -35,11 +35,20 @@ pub(super) async fn accept_loop<R: Runtime>(
                         tokio::spawn(handle_conn(stream, client));
                     }
                     Err(e) => {
+                        // A single failed `accept()` (e.g. the process hitting
+                        // its file-descriptor limit, or a peer resetting the
+                        // connection before the kernel finished the three-way
+                        // handshake) must not take down the whole listener --
+                        // otherwise one transient error would silently stop
+                        // the proxy from accepting any further connections.
+                        // Record it for `arti_last_error`, back off briefly so
+                        // a *persistent* failure can't spin the loop at 100%
+                        // CPU, and keep serving.
                         crate::set_err(
                             &last_error,
                             format!("error accepting SOCKS connection: {e}"),
                         );
-                        return;
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                 }
             }
@@ -82,11 +91,22 @@ async fn handle_conn<R: Runtime>(mut stream: TcpStream, client: Arc<TorClient<R>
     let addr = request.addr().to_string();
     let port = request.port();
 
+    // Mirrors upstream's `stream_preference()` (`crates/arti/src/proxy/socks.rs`):
+    // a literal IPv4/IPv6 address pins the address family; otherwise SOCKS4
+    // and SOCKS4a (which only ever support IPv4) force `ipv4_only`, and a
+    // SOCKS5 hostname request just prefers IPv4 without ruling out IPv6.
+    // The previous version skipped the SOCKS4/4a check, so a SOCKS4a client
+    // requesting a hostname (rather than a literal address) could get routed
+    // over an IPv6-only stream that a real SOCKS4 client can never use.
     let mut prefs = StreamPrefs::new();
     if addr.parse::<Ipv4Addr>().is_ok() {
         prefs.ipv4_only();
     } else if addr.parse::<Ipv6Addr>().is_ok() {
         prefs.ipv6_only();
+    } else if request.version() == tor_socksproto::SocksVersion::V4 {
+        prefs.ipv4_only();
+    } else {
+        prefs.ipv4_preferred();
     }
 
     match request.command() {

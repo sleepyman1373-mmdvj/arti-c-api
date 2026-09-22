@@ -122,6 +122,14 @@ tracing = "0.1.36"
 void = "1"
 web-time-compat = { path = "../web-time-compat", version = "0.2.0" }
 
+# On Windows there is no SQLite to link against out of the box, and `libsqlite3-sys`
+# would otherwise ask the linker for a `sqlite3.lib` that does not exist (LNK1181).
+# Bundling SQLite here mirrors the `static` feature, but without requiring callers to
+# opt in.  This is an extra declaration of an existing dependency, not a new package,
+# so it does not change `Cargo.lock`.
+[target.'cfg(windows)'.dependencies]
+rusqlite = { version = ">=0.36.0, <0.40.0", features = ["bundled", "time"] }
+
 [dev-dependencies]
 anyhow = "1.0.23"
 filetime = "0.2"

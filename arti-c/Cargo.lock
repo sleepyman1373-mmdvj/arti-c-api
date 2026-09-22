@@ -95,9 +95,13 @@ name = "arti-c"
 version = "0.1.0"
 dependencies = [
  "arti-client",
+ "async-trait",
+ "futures",
  "liblzma-sys",
  "rusqlite",
+ "socket2",
  "tokio",
+ "tokio-util",
  "tor-rtcompat",
  "tor-socksproto",
  "tracing-subscriber",

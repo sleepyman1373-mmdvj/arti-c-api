@@ -38,6 +38,25 @@ typedef struct arti arti;
 arti *arti_start(const char *data_dir, uint16_t socks_port);
 
 /*
+ * Start the Arti client exactly as arti_start() does, but stamp
+ * outbound_mark on every socket Arti opens, via SO_MARK.
+ *
+ * A host that diverts all outbound traffic into a transparent proxy needs
+ * this: Arti's own connections to the Tor network have to be exempt from
+ * those rules, or they are diverted straight back into the tunnel Arti is
+ * carrying. The mark is the caller's to choose -- the firewall rules use it
+ * to identify the traffic to pass through untouched.
+ *
+ * Pass 0 to disable marking, which is identical to arti_start(). SO_MARK is
+ * Linux-only: elsewhere a non-zero mark starts the client successfully but
+ * makes every connection attempt fail, so request a mark only on a platform
+ * where you could have set one yourself.
+ */
+arti *arti_start_with_mark(const char *data_dir,
+                           uint16_t socks_port,
+                           uint32_t outbound_mark);
+
+/*
  * Return 1 if the client has fully bootstrapped onto the Tor network,
  * 0 if it is still connecting, and -1 on error (NULL handle, or bootstrap
  * failed; see arti_last_error()).

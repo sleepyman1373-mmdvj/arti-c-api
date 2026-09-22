@@ -20,6 +20,8 @@ a local **SOCKS5 proxy** on `127.0.0.1:<port>`.
 
 ```c
 arti       *arti_start(const char *data_dir, uint16_t socks_port);
+arti       *arti_start_with_mark(const char *data_dir, uint16_t socks_port,
+                                 uint32_t outbound_mark);
 int         arti_is_ready(arti *a);
 uint16_t    arti_socks_port(arti *a);
 const char *arti_last_error(const arti *a);
@@ -32,6 +34,24 @@ const char *arti_version(void);
   `9050`). It returns immediately after the listener is bound; it does not
   wait for bootstrap. `data_dir` may be `NULL` for platform-default storage,
   or a directory in which `state/` and `cache/` subdirectories are created.
+* `arti_start_with_mark` is `arti_start` plus an `SO_MARK` on every TCP
+  socket Arti opens to the Tor network (relays, directory authorities,
+  bridges). Pass `0` to leave them unmarked, which is exactly what
+  `arti_start` does.
+
+  This exists for transparent-proxy hosts. A proxying VPN normally has to
+  exempt the core's own upstream connections from being routed back into the
+  tunnel it is carrying, and on Linux the usual way to do that is to mark
+  them and let the firewall rules ignore that mark. Arti picks its relay
+  addresses at runtime, so the host has no way to describe them up front;
+  marking the sockets is the only usable signal.
+
+  Setting a mark requires `CAP_NET_ADMIN` and is Linux/Android only. On other
+  platforms the call still starts Arti, but returns a client whose outbound
+  sockets cannot be marked — there is no way to report that separately, so do
+  not use it there. As with `arti_start`, the mark only covers connections
+  Arti itself opens; a SOCKS client still reaches the proxy over loopback.
+
 * `arti_is_ready` returns `1` once the client is fully bootstrapped, `0`
   while still connecting, and `-1` on error.
 * `arti_last_error(NULL)` returns the reason for a failed `arti_start`;
@@ -172,6 +192,16 @@ SOCKS5 CONNECT to `example.com:80` and prints the response).
   platforms. Adding new functions does not break the existing ABI.
 * Threads: `arti_start` spawns one OS thread that owns a multi-threaded
   tokio runtime; `arti_stop` joins it and releases everything.
+* The outbound mark is applied by substituting the runtime's TCP provider
+  (`src/tcp_mark.rs`): a `tokio` runtime whose `NetStreamProvider` creates
+  each socket through `socket2` so it can `setsockopt(SO_MARK)` before
+  connecting, handed to `TorClient::with_runtime()`. That is the only public
+  seam that sees every socket Arti opens — relay connections are made deep
+  inside `arti-client`, and nothing there takes a mark or a socket factory.
+  Because it is a *provider*, not a filter, it also covers connection
+  attempts that never reach a relay (retries, fallbacks, bridges). The
+  provider is client-only: `listen()` returns `Unsupported`, which is all
+  Arti needs from it.
 
 ### Logging
 

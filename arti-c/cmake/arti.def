@@ -5,6 +5,7 @@
 LIBRARY arti
 EXPORTS
     arti_start
+    arti_start_with_mark
     arti_is_ready
     arti_socks_port
     arti_last_error

@@ -25,6 +25,14 @@ crate-type = ["staticlib"]
 arti-client = { version = "0.46", default-features = true }
 tor-rtcompat = "0.46"
 tor-socksproto = "0.46"
+# Used by the `tcp_mark` module, which substitutes arti's TCP provider so its
+# sockets can carry SO_MARK. `socket2`'s `all` feature is what exposes
+# `set_mark` on Linux; `futures` supplies the AsyncRead/AsyncWrite traits and
+# `tokio-util` the tokio<->futures adapter those sockets are wrapped in.
+async-trait = "0.1"
+futures = "0.3"
+socket2 = { version = "0.6", features = ["all"] }
+tokio-util = { version = "0.7", features = ["compat"] }
 # Build SQLite from vendored sources (rather than linking the system
 # libsqlite3) so arti-c doesn't need it installed; the resulting static
 # archive is linked by CMake (see CMakeLists.txt). This does NOT cover TLS:

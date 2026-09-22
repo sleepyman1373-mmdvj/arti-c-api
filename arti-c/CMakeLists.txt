@@ -57,6 +57,7 @@ set(RUST_SOURCES
     ${RUST_MANIFEST_DIR}/Cargo.lock
     ${RUST_MANIFEST_DIR}/src/lib.rs
     ${RUST_MANIFEST_DIR}/src/socks.rs
+    ${RUST_MANIFEST_DIR}/src/tcp_mark.rs
 )
 
 set(RUST_BUILD_ARGS
@@ -170,8 +171,20 @@ else()
     )
 endif()
 
+# Included here (rather than only further down, next to the install rules) so
+# CMAKE_INSTALL_INCLUDEDIR is already defined when the INSTALL_INTERFACE
+# generator expression below is evaluated. A generator expression is expanded
+# when the target is exported, but `${}` substitution inside it happens
+# immediately -- if the variable were still empty at this point, the installed
+# target would export an empty include directory and consumers would silently
+# not get arti.h on their include path.
+include(GNUInstallDirs)
+
+# BUILD_INTERFACE for `add_subdirectory()` consumers, INSTALL_INTERFACE for
+# `find_package(arti)` consumers.
 target_include_directories(arti PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 # The Rust static library is always built in the release profile and links
@@ -189,7 +202,7 @@ set_target_properties(arti PROPERTIES
 
 # Rust static libraries need the C++ runtime on some configurations (LLVM
 # toolchain components); harmless where unused.
-include(GNUInstallDirs)
+# (GNUInstallDirs is already included above, next to the arti include dirs.)
 find_package(Threads REQUIRED)
 target_link_libraries(arti PRIVATE Threads::Threads)
 
@@ -272,11 +285,62 @@ endif()
 # ---------------------------------------------------------------------------
 # Install / packaging
 # ---------------------------------------------------------------------------
-install(TARGETS arti simple arti-proxy
+# `arti` is installed with an EXPORT set so that `cmake --install` also writes
+# the CMake package files consumers need for:
+#
+#     find_package(arti REQUIRED)
+#     target_link_libraries(myapp PRIVATE arti::arti)
+#
+# The two example executables are installed but deliberately not exported:
+# they are programs, not something a consumer links against, and putting an
+# executable in an export set would only add noise to artiTargets.cmake.
+install(TARGETS arti
+    EXPORT   artiTargets
     LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
     PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+install(TARGETS simple arti-proxy
+    RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# The package files live in <prefix>/lib/cmake/arti/, the standard location
+# CMake searches under every entry of CMAKE_PREFIX_PATH, so pointing a
+# consumer at this install prefix (-DCMAKE_PREFIX_PATH=<prefix>) is all it
+# takes. The NAMESPACE makes the imported target `arti::arti`, which also
+# matches the plain `arti` target name used by add_subdirectory() consumers.
+install(EXPORT artiTargets
+    FILE      artiTargets.cmake
+    NAMESPACE arti::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/arti
+)
+
+include(CMakePackageConfigHelpers)
+
+# Generate the config file from the template next to this file: @PACKAGE_INIT@
+# has to be expanded by configure_package_config_file(), which is what also
+# makes the installed targets relocatable (no absolute build-tree paths baked
+# in). SameMajorVersion keys compatibility off the major version only, which is
+# the same granularity as SOVERSION above. Note the usual 0.x caveat: it makes
+# find_package(arti 0.2) succeed against a 0.1.0 install, so bump the major
+# version (or switch to ExactVersion) once the ABI is meant to be stable.
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/artiConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/artiConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/arti
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/artiConfigVersion.cmake
+    VERSION       ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/artiConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/artiConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/arti
 )
 
 set(CPACK_PACKAGE_NAME "arti-c")

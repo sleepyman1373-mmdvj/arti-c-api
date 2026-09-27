@@ -20,11 +20,14 @@ name = "arti_ffi"
 crate-type = ["staticlib"]
 
 [dependencies]
-# Library-only Arti client. No upstream source is modified; this depends on
-# the published crates that make up Arti 2.6.x.
-arti-client = { version = "0.46", default-features = true }
-tor-rtcompat = "0.46"
-tor-socksproto = "0.46"
+# Arti client library, built from the local `arti` git submodule rather than
+# the published crates. The three crates below are members of the Arti
+# workspace, so path dependencies pull in that exact source tree; the
+# remaining tor-* crates they depend on are resolved by version from
+# crates.io (the submodule is upstream Arti 0.46.x, so they match).
+arti-client = { path = "arti/crates/arti-client" }
+tor-rtcompat = { path = "arti/crates/tor-rtcompat" }
+tor-socksproto = { path = "arti/crates/tor-socksproto" }
 # Used by the `tcp_mark` module, which substitutes arti's TCP provider so its
 # sockets can carry SO_MARK. `socket2`'s `all` feature is what exposes
 # `set_mark` on Linux; `futures` supplies the AsyncRead/AsyncWrite traits and

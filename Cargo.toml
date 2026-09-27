@@ -1,0 +1,66 @@
+[package]
+name = "arti-c"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Minimal stable C ABI wrapper around Arti (arti-client) with a built-in SOCKS5 proxy"
+license = "MIT OR Apache-2.0"
+repository = "https://gitlab.torproject.org/tpo/core/arti"
+keywords = ["tor", "arti", "ffi", "c-api", "socks"]
+categories = ["network-programming", "api-bindings"]
+
+# This crate is deliberately standalone: it is NOT a member of the upstream
+# Arti workspace, and it does not modify any upstream source.
+[workspace]
+
+[lib]
+name = "arti_ffi"
+# Build as a static library (libarti_ffi.a / arti_ffi.lib) that CMake links
+# into the final shared library (libarti.so / libarti.dylib / arti.dll).
+crate-type = ["staticlib"]
+
+[dependencies]
+# Library-only Arti client. No upstream source is modified; this depends on
+# the published crates that make up Arti 2.6.x.
+arti-client = { version = "0.46", default-features = true }
+tor-rtcompat = "0.46"
+tor-socksproto = "0.46"
+# Used by the `tcp_mark` module, which substitutes arti's TCP provider so its
+# sockets can carry SO_MARK. `socket2`'s `all` feature is what exposes
+# `set_mark` on Linux; `futures` supplies the AsyncRead/AsyncWrite traits and
+# `tokio-util` the tokio<->futures adapter those sockets are wrapped in.
+async-trait = "0.1"
+futures = "0.3"
+socket2 = { version = "0.6", features = ["all"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+# Build SQLite from vendored sources (rather than linking the system
+# libsqlite3) so arti-c doesn't need it installed; the resulting static
+# archive is linked by CMake (see CMakeLists.txt). This does NOT cover TLS:
+# the default `native-tls` backend still binds to the system OpenSSL on
+# Linux/Unix (see the OpenSSL::SSL/OpenSSL::Crypto linking in
+# CMakeLists.txt and the Requirements section of README.md).
+rusqlite = { version = "0.39", features = ["bundled"] }
+# Force liblzma to be built from the vendored xz sources instead of probing
+# pkg-config for the system liblzma. `liblzma-sys` (pulled in indirectly via
+# arti-client -> compression-codecs -> liblzma) prefers a system liblzma
+# >= 5.8.0 when one is present, in which case its build script returns early
+# and emits a *dynamic* `cargo:rustc-link-lib=lzma` with no archive in
+# OUT_DIR. Cargo does not propagate that out of a `staticlib`, so the final
+# libarti.so ends up with unresolved lzma_* symbols. The `static` feature
+# makes the probe unconditional and guarantees a liblzma.a for CMake to link
+# (the same glob that picks up bundled sqlite3/zstd). Note this also makes
+# the build behave identically on distros whose liblzma is older than 5.8.0.
+liblzma-sys = { version = "0.4.9", features = ["static"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "macros",
+    "sync",
+    "time",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true

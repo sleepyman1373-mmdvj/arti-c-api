@@ -1,0 +1,40 @@
+# CMake package config for arti -- the arti-c C ABI wrapper around Arti (Tor).
+#
+# Installed to <prefix>/lib/cmake/arti/artiConfig.cmake by `cmake --install`,
+# so consumers only need this install prefix on CMAKE_PREFIX_PATH:
+#
+#     find_package(arti REQUIRED)
+#     target_link_libraries(myapp PRIVATE arti::arti)
+#
+# The imported target carries both the public header directory and the shared
+# library location, so there is no find_path()/find_library() for arti.h and
+# libarti.so. Whatever CMAKE_PREFIX_PATH entry found this file is also where
+# the header and library are resolved from, which keeps a relocated install
+# (a copy of the prefix moved elsewhere) working.
+
+@PACKAGE_INIT@
+
+# Deliberately no find_dependency() calls.
+#
+# Everything libarti needs at link time -- Threads, OpenSSL, dl/m on Unix, the
+# Windows system libraries, the Rust static archive and the native libraries
+# its sys crates emit -- is recorded as PRIVATE on the `arti` target, because
+# nothing in arti's public API (include/arti.h) exposes any of it. For a SHARED
+# library CMake leaves PRIVATE dependencies out of the exported
+# INTERFACE_LINK_LIBRARIES, so a consumer links libarti.so alone: those
+# libraries are already baked into it, and re-finding them here would at best
+# be a no-op and at worst pick up a different OpenSSL than the one libarti was
+# linked against.
+#
+# A find_dependency() belongs here only if a dependency is ever promoted to
+# PUBLIC/INTERFACE, or if `arti` is ever made STATIC -- a static archive does
+# propagate its PRIVATE dependencies to consumers. CMakeFindDependencyMacro is
+# included below so that change is a one-line addition.
+include(CMakeFindDependencyMacro)
+
+include("${CMAKE_CURRENT_LIST_DIR}/artiTargets.cmake")
+
+# Reports a missing optional component as a false return rather than a hard
+# error. arti currently declares none, so this is a no-op that keeps the file
+# correct if components are ever added.
+check_required_components(arti)

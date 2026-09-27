@@ -60,11 +60,22 @@ set(RUST_SOURCES
     ${RUST_MANIFEST_DIR}/src/tcp_mark.rs
 )
 
+# Arti is built from the local git submodule, so its sources must also
+# trigger cargo. Track the manifests (cheap, and they change on every
+# release bump); CONFIGURE_DEPENDS re-globs at build time so newly added
+# crates are picked up without re-running cmake by hand. Cargo's own
+# fingerprinting then rebuilds only what actually changed.
+file(GLOB_RECURSE ARTI_SOURCES CONFIGURE_DEPENDS
+    ${RUST_MANIFEST_DIR}/arti/crates/*/Cargo.toml
+)
+list(APPEND RUST_SOURCES ${ARTI_SOURCES})
+
 set(RUST_BUILD_ARGS
     build
     --manifest-path ${RUST_MANIFEST_DIR}/Cargo.toml
     --profile ${ARTI_PROFILE}
     --locked
+    --features static-sqlite
 )
 if(ARTI_CARGO_TARGET)
     list(APPEND RUST_BUILD_ARGS --target ${ARTI_CARGO_TARGET})

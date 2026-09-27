@@ -4,9 +4,9 @@ A minimal, ABI-stable C wrapper around [Arti](https://gitlab.torproject.org/tpo/
 2.6.x (via the `arti-client` library). It runs Arti **in-process** and exposes
 a local **SOCKS5 proxy** on `127.0.0.1:<port>`.
 
-* No upstream Arti source is modified: arti-c depends on the published
-  `arti-client` crates (0.46.x, as shipped with Arti 2.6.x) and only adds a
-  new FFI layer.
+* No upstream Arti source is modified: arti-c builds the local `arti` git
+  submodule (upstream Arti 2.6.x, `arti-client` 0.46.x) and only adds a new
+  FFI layer. Fetch it with `git submodule update --init` before building.
 * The Rust side is compiled as a static library (`libarti_ffi.a`,
   `crate-type = ["staticlib"]`), which CMake links into the final shared
   library: `libarti.so` (Linux), `libarti.dylib` (macOS), or `arti.dll`

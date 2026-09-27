@@ -1,0 +1,3 @@
+[submodule "arti"]
+	path = arti
+	url = https://github.com/sleepyman1373-mmdvj/arti.git

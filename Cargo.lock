@@ -146,7 +146,6 @@ dependencies = [
  "async-trait",
  "futures",
  "liblzma-sys",
- "rusqlite",
  "socket2",
  "tokio",
  "tokio-util",

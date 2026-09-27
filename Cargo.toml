@@ -37,12 +37,13 @@ futures = "0.3"
 socket2 = { version = "0.6", features = ["all"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 # Build SQLite from vendored sources (rather than linking the system
-# libsqlite3) so arti-c doesn't need it installed; the resulting static
-# archive is linked by CMake (see CMakeLists.txt). This does NOT cover TLS:
-# the default `native-tls` backend still binds to the system OpenSSL on
-# Linux/Unix (see the OpenSSL::SSL/OpenSSL::Crypto linking in
-# CMakeLists.txt and the Requirements section of README.md).
-rusqlite = { version = "0.39", features = ["bundled"] }
+# libsqlite3) so arti-c doesn't need it installed. Enabled on every platform
+# by CMake through arti's own `static-sqlite` feature (see the [features]
+# table below); the resulting static archive is linked by CMake (see
+# CMakeLists.txt). This does NOT cover TLS: the default `native-tls` backend
+# still binds to the system OpenSSL on Linux/Unix (see the
+# OpenSSL::SSL/OpenSSL::Crypto linking in CMakeLists.txt and the Requirements
+# section of README.md).
 # Force liblzma to be built from the vendored xz sources instead of probing
 # pkg-config for the system liblzma. `liblzma-sys` (pulled in indirectly via
 # arti-client -> compression-codecs -> liblzma) prefers a system liblzma
@@ -63,6 +64,14 @@ tokio = { version = "1", features = [
     "sync",
     "time",
 ] }
+
+[features]
+# arti's own feature that compiles SQLite from vendored sources
+# (arti-client -> tor-dirmgr -> rusqlite/bundled) instead of linking the
+# system libsqlite3. Enabled unconditionally by the CMake build on every
+# platform, so the final libarti.so/.dylib/.dll never has a runtime dependency
+# on libsqlite3.
+static-sqlite = ["arti-client/static-sqlite"]
 
 [profile.release]
 opt-level = "z"

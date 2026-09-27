@@ -75,6 +75,7 @@ set(RUST_BUILD_ARGS
     --manifest-path ${RUST_MANIFEST_DIR}/Cargo.toml
     --profile ${ARTI_PROFILE}
     --locked
+    --features static-sqlite
 )
 if(ARTI_CARGO_TARGET)
     list(APPEND RUST_BUILD_ARGS --target ${ARTI_CARGO_TARGET})

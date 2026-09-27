@@ -235,6 +235,7 @@ elseif(APPLE)
         "-framework Security"
         "-framework CoreFoundation"
         "-framework SystemConfiguration"
+        "-framework IOKit"
     )
 else()
     # Linux and other Unix-likes.
